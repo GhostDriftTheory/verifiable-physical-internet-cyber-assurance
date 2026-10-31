@@ -806,6 +806,27 @@ class PublicQualityTests(unittest.TestCase):
         for name in ('../secret','/tmp/secret','x/../../secret'):
             with self.subTest(name=name),self.assertRaises(ValueError):v.validate_relative(name)
 
+    def test_release_rejects_cross_platform_absolute_paths(self):
+        for name in ('/tmp/secret', r'C:\private\secret', r'\\server\share\secret',
+                     r'\rooted\secret', 'x\\..\\secret', 'x//secret', 'x/./secret'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                v.validate_relative(name)
+
+    def test_lean_chunks_preserve_every_concrete_proposition(self):
+        with tempfile.TemporaryDirectory() as d:
+            generated = Path(d) / 'Correspondence.lean'
+            v.generate(generated)
+            original = [line for line in generated.read_text(encoding='utf-8').splitlines()
+                        if line.startswith('example : ')]
+            parts = v.split_correspondence(generated, batch_size=97)
+            actual = [line for part in parts
+                      for line in part.read_text(encoding='utf-8').splitlines()
+                      if line.startswith('example : ')]
+            self.assertEqual(actual, original)
+            self.assertTrue(all(part.name.startswith('Correspondence_') for part in parts))
+            self.assertTrue(all(len([line for line in part.read_text(encoding='utf-8').splitlines()
+                                     if line.startswith('example : ')]) <= 97 for part in parts))
+
     def test_release_rejects_private_key_material(self):
         marker=b'-----BEGIN '+b'PRIVATE KEY-----\nsecret\n'
         with self.assertRaises(ValueError):v.scan_bytes('safe.json',marker)
