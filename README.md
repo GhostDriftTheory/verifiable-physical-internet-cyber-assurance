@@ -1,5 +1,9 @@
 # VPI Cyber Assurance
 
+[![CI Validation](https://github.com/GhostDriftTheory/verifiable-physical-internet-cyber-assurance/actions/workflows/validate.yml/badge.svg?branch=main)](https://github.com/GhostDriftTheory/verifiable-physical-internet-cyber-assurance/actions/workflows/validate.yml)
+
+**Automated CI Validation:** Ubuntu and Windows (Python 3.11 / 3.13), including runtime assurance tests and Lean 4 formal verification. All five CI jobs passed in the verified release.
+
 **フィジカルインターネットの企業間接続・安全切替え PoC**  
 Public Reference · v2.0.0-rc2 · 株式会社AIアシュアランス
 
