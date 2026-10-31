@@ -29,7 +29,7 @@ import zipfile
 from collections import deque
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
 import cryptography
 import assurance
@@ -265,8 +265,14 @@ def strip_comments(s):
     if depth: raise ValueError('unterminated Lean comment')
     return ''.join(out)
 def validate_relative(name: str):
-    p=Path(name)
-    if p.is_absolute() or '..' in p.parts or not p.parts:
+    # ZIP members must be safe on BOTH POSIX and Windows, regardless of CI host.
+    # Windows treats '/tmp/secret' as drive-relative, not Path.is_absolute().
+    if not isinstance(name, str) or not name or '\x00' in name or '\\' in name:
+        raise ValueError('unsafe release path')
+    p = PurePosixPath(name)
+    w = PureWindowsPath(name)
+    if (p.is_absolute() or w.root or w.drive or '..' in p.parts or
+        any(part in {'', '.', '..'} for part in name.split('/'))):
         raise ValueError('unsafe release path')
     if p.name in BLOCKED_NAMES or p.suffix in BLOCKED_SUFFIXES or any(x in {'__pycache__','.venv','private-runtime'} for x in p.parts):
         raise ValueError('runtime/private file cannot be released: '+name)
@@ -311,6 +317,34 @@ def write_json(path: Path, value, *, compact=False):
     os.replace(temporary, path)
 
 
+def split_correspondence(generated: Path, batch_size: int = 128):
+    """Compile every generated raw-input proposition in bounded Lean processes.
+
+    A monolithic ~6,200-example Lean file overflows Lean 4.19's native stack.
+    No example is dropped or replaced with evaluation outside Lean.
+    These parts are temporary validation artifacts, not public release files.
+    """
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError('invalid Lean batch size')
+    lines = generated.read_text(encoding='utf-8').splitlines()
+    indices = [i for i, line in enumerate(lines) if line.startswith('example : ')]
+    if not indices or indices != list(range(indices[0], indices[-1] + 1)):
+        raise ValueError('correspondence examples are empty or noncontiguous')
+    prefix, cases, suffix = lines[:indices[0]], lines[indices[0]:indices[-1]+1], lines[indices[-1]+1:]
+    if (not any(line.strip() == 'import VpiAssurance' for line in prefix)
+        or not any(line.strip() == 'namespace VpiAssurance.Concrete' for line in prefix)
+        or not any(line.strip() == 'end VpiAssurance.Concrete' for line in suffix)):
+        raise ValueError('unexpected generated correspondence structure')
+    paths = []
+    for index, start in enumerate(range(0, len(cases), batch_size)):
+        part = generated.with_name(f'Correspondence_{index:03d}.lean')
+        part.write_text('\n'.join(prefix + cases[start:start+batch_size] + suffix) + '\n', encoding='utf-8')
+        paths.append(part)
+    if sum(p.read_text(encoding='utf-8').count('example : ') for p in paths) != len(cases):
+        raise ValueError('correspondence chunk coverage mismatch')
+    return paths
+
+
 def run_formal(output: Path, generated: Path):
     output.mkdir(parents=True, exist_ok=True)
     result = {'status': 'NOT_RUN_TOOLCHAIN_UNAVAILABLE', 'pinned_lean': PIN,
@@ -338,21 +372,26 @@ def run_formal(output: Path, generated: Path):
         build_dir = generated.parent.resolve()
         model = build_dir / 'VpiAssurance.lean'
         model.write_bytes((ROOT / 'VpiAssurance.lean').read_bytes())
+        parts = split_correspondence(generated)
+        result['correspondence_parts'] = len(parts)
+        result['correspondence_coverage'] = sum(inspect_sources(part)[part.name]['concrete_examples'] for part in parts)
+        if result['correspondence_coverage'] != result['sources'][generated.name]['concrete_examples']:
+            raise ValueError('correspondence coverage mismatch')
         for path in build_dir.glob('*.olean'):
             path.unlink()
         env['LEAN_PATH'] = str(build_dir)
         log = []
-        for path in (model, generated.resolve()):
+        for path in (model, *parts):
             p = subprocess.run([lean, '-o', str(path.with_suffix('.olean')), str(path)],
                                cwd=build_dir, env=env, capture_output=True, text=True, timeout=600)
             log.append(f'=== {path.name} ===\n' + p.stdout + p.stderr)
             if p.returncode:
-                result.update(status='BUILD_FAILED', reason='Lean rejected a source; no proof count is reported.')
+                result.update(status='BUILD_FAILED', reason=f'Lean rejected {path.name}; no proof count is reported.')
                 break
         else:
             result.update(status='PASS',
                 checked_theorems=result['sources']['VpiAssurance.lean']['named_theorems'],
-                checked_concrete_equalities=result['sources'][generated.name]['concrete_examples'])
+                checked_concrete_equalities=result['correspondence_coverage'])
         result['build_log'] = '\n'.join(log)
         (output / 'lean-build.log').write_text(result['build_log'], encoding='utf-8')
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
