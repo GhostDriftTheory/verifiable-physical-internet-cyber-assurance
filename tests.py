@@ -851,6 +851,19 @@ class PublicQualityTests(unittest.TestCase):
     def test_state_cap_cannot_be_reported_as_exhaustive(self):
         with self.assertRaisesRegex(RuntimeError,'NOT exhaustive'):v.explore(limit=1)
 
+class ConsoleEncodingTests(unittest.TestCase):
+    def test_progress_output_under_windows_charmap(self):
+        """The scenario runner must never abort on a non-UTF console."""
+        sink = io.BytesIO()
+        stream = io.TextIOWrapper(sink, encoding="cp1252", errors="strict")
+        with contextlib.redirect_stdout(stream):
+            demo.console_line("OK D01 正常接続・最小情報の実HTTP転送")
+        stream.flush()
+        rendered = sink.getvalue().decode("cp1252")
+        self.assertIn("OK D01", rendered)
+        self.assertIn(r"\u6b63", rendered)
+
+
 class CompactArtifactTests(unittest.TestCase):
     """Protect the compact container, trust labels and release gate semantics."""
     @classmethod
