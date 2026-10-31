@@ -282,10 +282,16 @@ def scenario_suite(c: Cluster, progress=None):
     run("D08", "社内条件未成立は詳細を出さず保留", policy_hold)
 
     def expired():
-        pkg = c.local("A", "prepare", command("expired", ttl=250))["package"]
-        time.sleep(0.3)
+        # Give the signed approval time to finish, even on a slow Windows runner.
+        # Expire the *issued* permit, not an unissued request that timed out in preparation.
+        prepared = c.local("A", "prepare", command("expired", ttl=10000))
+        check(prepared["verdict"] == "PASS" and "package" in prepared,
+              "signed permit did not finish preparation before expiry")
+        pkg = prepared["package"]
+        expiry = pkg["permit"]["body"]["expires_ms"]
+        time.sleep(max(0, (expiry - a.now_ms() + 150) / 1000))
         r = c.remote("B", "execute", pkg)
-        check(r["body"]["reason"] == "EXPIRED_OR_FUTURE", "expired permit accepted")
+        check(r["body"].get("reason") == "EXPIRED_OR_FUTURE", "expired permit accepted")
         return {"verdict": "REJECT", "reason": "EXPIRED_OR_FUTURE"}
     run("D09", "期限切れ承認を拒否", expired)
 
@@ -390,15 +396,32 @@ def scenario_suite(c: Cluster, progress=None):
     def cancellation_race():
         pkg = c.local("A", "prepare", command("cancel-race"))["package"]
         before = c.effects("B")
+        cancel_message = c.terminal_message(pkg["request"], "cancel")
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             f1 = pool.submit(c.remote, "B", "execute", pkg)
-            f2 = pool.submit(c.remote, "B", "cancel", c.terminal_message(pkg["request"], "cancel"))
+            f2 = pool.submit(c.remote, "B", "cancel", cancel_message)
             r1, r2 = f1.result(), f2.result()
-        check(r1 == r2, "execute/cancel did not converge")
-        status = r1["body"]["status"]
-        check(c.effects("B") - before == (1 if status == "COMMITTED" else 0), "terminal and effect inconsistent")
-        c.local("A", "reconcile", {"intent": "cancel-race"})
-        return {"verdict": "PASS", "terminal_outcome": status, "race_agreed": True}
+        # Concurrent callers may observe a signed temporary HOLD if source
+        # admission expires before the durable cancel/commit completes. Check
+        # their final *terminal* result, not accidental response equality.
+        keys = {n: c.info[n]["public_key"] for n in "ABC"}
+        final = c.remote("B", "status", c.terminal_message(pkg["request"], "status"))
+        terminal = a.verify(final, keys, "B")
+        check(terminal["kind"] == "receipt" and terminal["status"] in ("CANCELLED", "COMMITTED"),
+              "concurrent operations did not produce a terminal receipt")
+        for signed_result in (r1, r2):
+            body = a.verify(signed_result, keys, "B")
+            if body["kind"] == "receipt":
+                check(signed_result == final, "conflicting terminal receipts in cancel/execute race")
+            else:
+                check(body["kind"] == "decision" and body["verdict"] == "HOLD"
+                      and body["reason"] in ("SOURCE_AUTHORIZATION_EXPIRED", "SOURCE_AUTHORIZATION_UNAVAILABLE"),
+                      "unexpected nonterminal decision in cancel/execute race")
+        check(c.effects("B") - before == (1 if terminal["status"] == "COMMITTED" else 0),
+              "terminal and effect inconsistent")
+        reconciled = c.local("A", "reconcile", {"intent": "cancel-race"})
+        check(reconciled.get("receipt") == final, "source did not reconcile the exact terminal receipt")
+        return {"verdict": "PASS", "terminal_outcome": terminal["status"], "race_agreed": True}
     run("D18", "実行と取消しの競合を単一終端状態に確定", cancellation_race)
 
     def source_changed():
@@ -469,8 +492,46 @@ def scenario_suite(c: Cluster, progress=None):
         r = c.local("A", "submit", command("private-rule", units=500))
         check(r["verdict"] == "HOLD" and c.effects("B") == before_b, "private B rule not evaluated")
         r2 = c.local("A", "switch", {"intent": "private-rule", "destination": "C"})
-        check(r2["verdict"] == "PASS" and c.effects("C") == before_c + 1, "private C rule not independently evaluated")
-        return {"verdict": "HOLD -> PASS", "rule_threshold_shared": False, "route": "A-B -> A-C"}
+        retries = 0
+        if r2["verdict"] == "HOLD" and r2["reason"] == "SOURCE_AUTHORIZATION_EXPIRED":
+            # The receiver correctly denied a source grant that expired while
+            # Windows scheduled the HTTP/SQLite steps. Preserve the same signed
+            # request/permit, retry *the same attempt*, then reconcile the result.
+            # Never generate a new business intent or treat HOLD as a success.
+            check(c.effects("B") == before_b and c.effects("C") == before_c,
+                  "expired source admission had a business effect")
+            events = [e["body"] for e in c.local("A", "export")["events"]]
+            permits = [e["data"]["permit"] for e in events
+                       if e["event"] == "OUT_APPROVED" and e["data"]["intent"] == "private-rule"]
+            check(len(permits) == 1, "signed C approval was not recorded uniquely")
+            permit = permits[0]
+            requests = [e["data"]["request"] for e in events
+                        if e["event"] == "OUT_PREPARE"
+                        and e["data"]["request"]["body"]["intent"] == "private-rule"
+                        and e["data"]["request"]["body"]["destination"] == "C"
+                        and a.digest(e["data"]["request"]) == permit["body"]["request_hash"]]
+            check(len(requests) == 1, "signed C request does not match approved permit")
+            request = requests[0]
+            keys = {n: c.info[n]["public_key"] for n in "ABC"}
+            check(a.verify(request, keys, "A")["payload_hash"] == a.digest(command("private-rule", units=500)["payload"]),
+                  "replay request does not bind the original payload")
+            check(a.verify(permit, keys, "C")["request_hash"] == a.digest(request),
+                  "replay permit does not bind the same signed request")
+            packet = {"request": request, "permit": permit, "payload": command("private-rule", units=500)["payload"]}
+            for retries in range(1, 4):
+                signed_result = c.remote("C", "execute", packet)
+                body = a.verify(signed_result, keys, "C")
+                if body["kind"] == "receipt" and body["status"] == "COMMITTED":
+                    r2 = c.local("A", "reconcile", {"intent": "private-rule"})
+                    break
+                check(body["kind"] == "decision" and body["verdict"] == "HOLD"
+                      and body["reason"] == "SOURCE_AUTHORIZATION_EXPIRED"
+                      and c.effects("C") == before_c,
+                      "replay did not fail closed on an expired admission")
+        check(r2["verdict"] == "PASS" and c.effects("C") == before_c + 1
+              and c.effects("B") == before_b, "private C rule not independently evaluated")
+        return {"verdict": "HOLD -> PASS", "rule_threshold_shared": False,
+                "route": "A-B -> A-C", "signed_same_attempt_retries": retries}
     run("D25", "企業ごとに異なる社内ルールをローカル計算", private_rule)
 
     def before_commit_restart():
