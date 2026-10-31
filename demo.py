@@ -171,6 +171,21 @@ def wait_for_pause(c, node, request, timeout=3.0):
     raise AssertionError("receiver did not reach explicit pre-commit barrier")
 
 
+def console_line(message: str) -> None:
+    """Print progress without failing on limited Windows console encodings.
+
+    Full Unicode scenario names remain unchanged in the UTF-8 evidence/report.
+    Only the console rendering falls back to readable ASCII escape sequences.
+    """
+    encoding = getattr(sys.stdout, "encoding", None)
+    if encoding:
+        try:
+            message.encode(encoding)
+        except UnicodeEncodeError:
+            message = message.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(message, flush=True)
+
+
 def scenario_suite(c: Cluster, progress=None):
     cases = []
 
@@ -183,9 +198,9 @@ def scenario_suite(c: Cluster, progress=None):
             row = {"id": code, "name": label, "passed": False, "error": f"{type(e).__name__}: {e}"}
         row["elapsed_ms"] = int((time.perf_counter() - start) * 1000)
         cases.append(row)
-        print(f"{'OK  ' if row['passed'] else 'FAIL'} {code} {label}", flush=True)
+        console_line(f"{'OK  ' if row['passed'] else 'FAIL'} {code} {label}")
         if not row["passed"]:
-            print(row["error"], flush=True)
+            console_line(row["error"])
         if progress:
             progress(copy.deepcopy(cases))
 
