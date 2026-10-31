@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+run/
+run-*/
+validation-*/
+private-runtime/
+*.sqlite*
+*.db
+*.key
+admin.token
+network.json
+*.olean
+*.ilean
+*.zip
