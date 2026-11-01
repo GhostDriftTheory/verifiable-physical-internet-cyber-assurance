@@ -2,7 +2,7 @@
 
 [![CI Validation](https://github.com/GhostDriftTheory/verifiable-physical-internet-cyber-assurance/actions/workflows/validate.yml/badge.svg?branch=main)](https://github.com/GhostDriftTheory/verifiable-physical-internet-cyber-assurance/actions/workflows/validate.yml)
 
-**Automated CI Validation:** Ubuntu and Windows (Python 3.11 / 3.13), including runtime assurance tests and Lean 4 formal verification. All five CI jobs passed in the verified release.
+**Automated CI validation:** All five GitHub Actions jobs passed for commit `7104afa` (Ubuntu / Windows, Python 3.11 / 3.13, and Lean 4.19.0). [Verified CI run](https://github.com/GhostDriftTheory/verifiable-physical-internet-cyber-assurance/actions/runs/41254040449). The badge above reflects the latest `main` branch status.
 
 **フィジカルインターネットの企業間接続・安全切替え PoC**  
 Public Reference · v2.0.0-rc2 · 株式会社AIアシュアランス
@@ -93,7 +93,7 @@ python validate.py --require-lean
 
 **具体入力照合。** 6,144の条件組合せ、38の整数境界、実通信のCOMMIT観測値を、実行側と独立検証器で照合します。Leanの具体入力命題は実行時に生成し、配布物には大量の生成コードを含めません。Python同士の一致とLeanビルド成功は別の結果です。いずれも全入力の実装同値性証明ではありません。
 
-**このRC版のLean状態：未実行。** 作成環境にLeanツールチェーンがなく、定理宣言を機械検証済みとは表示していません。最新の検査状態は `sample.json` の `validation.formal` を参照してください。GitHub ActionsのLinux／Windows試験とLean必須ジョブを収録していますが、設定の存在はCI成功実績ではありません。
+**Lean形式検証：GitHub Actionsで成功。** Lean 4.19.0で抽象モデルと生成した具体入力命題のビルドが成功しています（[検証結果](https://github.com/GhostDriftTheory/verifiable-physical-internet-cyber-assurance/actions/runs/41254040449)）。一方、同梱 `sample.json` の `validation.formal` はLean未導入の環境で生成したときの記録であり、CIでの実検証結果とは区別してください。Python実装全体の形式証明を意味するものではありません。
 
 ## セキュリティ上の前提
 
@@ -126,7 +126,7 @@ python validate.py --require-lean
 # 変更したソースを検査し、同梱結果と画面を更新
 python validate.py --refresh-sample
 
-# Lean未実行を明示したRC版として、許可リストの14ファイルのみZIP化
+# 同梱sample.jsonのLean検証記録が未実行の場合に限るRCパッケージ例（14ファイル）
 python validate.py --package VPI_Cyber_Assurance_v2.0.0-rc2.zip --allow-pending-formal
 ```
 
@@ -138,4 +138,4 @@ Leanを実行して成功した場合、ZIP作成の `--allow-pending-formal` �
 
 A fixed-scope cyber-assurance reference for inter-company operations in a Physical Internet setting. Three local processes use separate SQLite databases and Ed25519 keys. The PoC binds receiver approval, source admission, operation content and terminal receipts; switching from B to C requires confirmed cancellation at B. Unknown outcomes remain on hold.
 
-Use `python demo.py --serve`, `python verifier.py sample.json`, and `python validate.py`. The independent verifier checks disclosed evidence, not real-world truth or compromised signers. The bundled anchors are not independent provenance. Lean declarations are included but were not executed for this RC; `--require-lean` fails unless the pinned Lean build succeeds. This is not a complete logistics platform or a production security product.
+Use `python demo.py --serve`, `python verifier.py sample.json`, and `python validate.py`. The independent verifier checks disclosed evidence, not real-world truth or compromised signers. The bundled anchors are not independent provenance. Lean 4.19.0 verification passed in [GitHub Actions](https://github.com/GhostDriftTheory/verifiable-physical-internet-cyber-assurance/actions/runs/41254040449); the bundled `sample.json` separately records a generation run where Lean was unavailable. `--require-lean` fails unless Lean succeeds in the current environment. This is not a complete logistics platform or a production security product.
